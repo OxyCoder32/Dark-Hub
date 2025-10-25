@@ -1,0 +1,274 @@
+-- External Script Debugger/Monitor
+-- Por: [Tu nombre]
+-- Fecha: 2024
+
+local Debugger = {
+    Version = "1.0",
+    ActiveMonitors = {},
+    LogHistory = {},
+    MaxLogSize = 1000
+}
+
+-- Configuración
+Debugger.Config = {
+    LogCalls = true,
+    LogReturns = true,
+    LogErrors = true,
+    LogExecutionTime = true,
+    MaxDepth = 10,
+    CaptureStack = true
+}
+
+-- Tabla para almacenar hooks originales
+local OriginalHooks = {
+    getfenv = getfenv,
+    setfenv = setfenv,
+    getmetatable = getmetatable,
+    setmetatable = setmetatable
+}
+
+-- Función para sanitizar output
+local function SanitizeOutput(value, depth)
+    depth = depth or 0
+    if depth > Debugger.Config.MaxDepth then
+        return "... (profundidad máxima alcanzada)"
+    end
+    
+    local valueType = type(value)
+    
+    if valueType == "table" then
+        local result = {}
+        for k, v in pairs(value) do
+            result[#result + 1] = string.format("[%s] = %s", 
+                SanitizeOutput(k, depth + 1), 
+                SanitizeOutput(v, depth + 1))
+        end
+        return string.format("table{%s}", table.concat(result, ", "))
+    elseif valueType == "string" then
+        return string.format("%q", value)
+    elseif valueType == "function" then
+        return "function"
+    elseif valueType == "userdata" then
+        return "userdata"
+    else
+        return tostring(value)
+    end
+end
+
+-- Sistema de logging
+function Debugger:Log(level, message, scriptName)
+    local logEntry = {
+        Timestamp = os.time(),
+        Level = level,
+        Message = message,
+        Script = scriptName or "Unknown",
+        Stack = Debugger.Config.CaptureStack and debug.traceback() or nil
+    }
+    
+    table.insert(self.LogHistory, logEntry)
+    
+    -- Mantener tamaño máximo del log
+    if #self.LogHistory > self.MaxLogSize then
+        table.remove(self.LogHistory, 1)
+    end
+    
+    -- Output en tiempo real
+    local output = string.format("[%s] [%s] %s: %s", 
+        os.date("%H:%M:%S"), 
+        level, 
+        scriptName or "Unknown", 
+        message)
+    
+    print(output)
+    
+    return logEntry
+end
+
+-- Hook para llamadas a funciones
+function Debugger:CreateFunctionHook(func, funcName, scriptName)
+    return function(...)
+        local args = {...}
+        local startTime = os.clock()
+        
+        -- Log de llamada
+        if Debugger.Config.LogCalls then
+            local argString = ""
+            for i, arg in ipairs(args) do
+                argString = argString .. SanitizeOutput(arg) .. ", "
+            end
+            argString = argString:gsub(", $", "")
+            
+            self:Log("CALL", string.format("%s(%s)", funcName, argString), scriptName)
+        end
+        
+        -- Ejecutar función original
+        local success, result = pcall(func, ...)
+        local endTime = os.clock()
+        
+        -- Log de retorno
+        if success and Debugger.Config.LogReturns then
+            local returnString = SanitizeOutput(result)
+            local timeInfo = Debugger.Config.LogExecutionTime and 
+                string.format(" (%.4fs)", endTime - startTime) or ""
+                
+            self:Log("RETURN", string.format("%s -> %s%s", funcName, returnString, timeInfo), scriptName)
+        elseif not success and Debugger.Config.LogErrors then
+            self:Log("ERROR", string.format("%s: %s", funcName, result), scriptName)
+        end
+        
+        if success then
+            return result
+        else
+            error(result)
+        end
+    end
+end
+
+-- Monitor para scripts específicos
+function Debugger:MonitorScript(scriptCode, scriptName)
+    scriptName = scriptName or "Anonymous Script"
+    
+    self:Log("INFO", string.format("Iniciando monitor para: %s", scriptName))
+    
+    -- Crear entorno seguro para el script
+    local scriptEnv = {
+        print = function(...)
+            local args = {...}
+            local message = table.concat(args, "\t")
+            Debugger:Log("PRINT", message, scriptName)
+        end,
+        
+        warn = function(...)
+            local args = {...}
+            local message = table.concat(args, "\t")
+            Debugger:Log("WARN", message, scriptName)
+        end,
+        
+        error = function(msg, level)
+            Debugger:Log("ERROR", tostring(msg), scriptName)
+            error(msg, level)
+        end
+    }
+    
+    -- Copiar funciones globales básicas
+    for key, value in pairs(getfenv(0)) do
+        if type(value) == "function" and not scriptEnv[key] then
+            scriptEnv[key] = Debugger:CreateFunctionHook(value, key, scriptName)
+        elseif type(value) ~= "function" then
+            scriptEnv[key] = value
+        end
+    end
+    
+    -- Ejecutar script monitoreado
+    local success, result = pcall(function()
+        local fn, err = loadstring(scriptCode, scriptName)
+        if not fn then
+            error(err)
+        end
+        
+        setfenv(fn, scriptEnv)
+        return fn()
+    end)
+    
+    if not success then
+        self:Log("ERROR", string.format("Error ejecutando script: %s", result), scriptName)
+    else
+        self:Log("INFO", "Script ejecutado exitosamente", scriptName)
+    end
+    
+    return success, result
+end
+
+-- Comandos del debugger
+function Debugger:ShowLogs(filterLevel, maxEntries)
+    maxEntries = maxEntries or 50
+    local count = 0
+    
+    print("=== DEBUGGER LOG ===")
+    for i = #self.LogHistory, 1, -1 do
+        local entry = self.LogHistory[i]
+        
+        if not filterLevel or entry.Level == filterLevel then
+            local timeStr = os.date("%H:%M:%S", entry.Timestamp)
+            print(string.format("[%s] [%s] %s: %s", 
+                timeStr, entry.Level, entry.Script, entry.Message))
+            
+            count = count + 1
+            if count >= maxEntries then
+                break
+            end
+        end
+    end
+    print(string.format("=== Mostrando %d entradas ===", count))
+end
+
+function Debugger:ClearLogs()
+    self.LogHistory = {}
+    print("Logs limpiados")
+end
+
+function Debugger:GetStats()
+    local stats = {
+        TotalLogs = #self.LogHistory,
+        Errors = 0,
+        Calls = 0,
+        Returns = 0
+    }
+    
+    for _, entry in ipairs(self.LogHistory) do
+        if entry.Level == "ERROR" then stats.Errors = stats.Errors + 1 end
+        if entry.Level == "CALL" then stats.Calls = stats.Calls + 1 end
+        if entry.Level == "RETURN" then stats.Returns = stats.Returns + 1 end
+    end
+    
+    return stats
+end
+
+-- Función para ejecutar scripts con monitor
+function ExecuteWithDebug(scriptCode, scriptName)
+    return Debugger:MonitorScript(scriptCode, scriptName)
+end
+
+-- Interface de comandos
+function DebugCommand(cmd, ...)
+    local args = {...}
+    
+    if cmd == "logs" then
+        Debugger:ShowLogs(args[1], args[2])
+    elseif cmd == "clear" then
+        Debugger:ClearLogs()
+    elseif cmd == "stats" then
+        local stats = Debugger:GetStats()
+        print("=== DEBUGGER STATS ===")
+        for k, v in pairs(stats) do
+            print(string.format("%s: %d", k, v))
+        end
+    elseif cmd == "config" then
+        if #args >= 2 then
+            Debugger.Config[args[1]] = args[2]
+            print(string.format("Config %s = %s", args[1], tostring(args[2])))
+        else
+            print("=== CONFIG ===")
+            for k, v in pairs(Debugger.Config) do
+                print(string.format("%s = %s", k, tostring(v)))
+            end
+        end
+    else
+        print("Comandos disponibles:")
+        print("logs [filter] [max] - Mostrar logs")
+        print("clear - Limpiar logs")
+        print("stats - Mostrar estadísticas")
+        print("config [key] [value] - Ver/Configurar opciones")
+    end
+end
+
+-- Ejemplo de uso
+print("=== External Script Debugger Cargado ===")
+print("Comandos: DebugCommand('logs'), DebugCommand('stats'), etc.")
+print("Para ejecutar scripts: ExecuteWithDebug(codigo, nombre)")
+
+return {
+    ExecuteWithDebug = ExecuteWithDebug,
+    DebugCommand = DebugCommand,
+    Debugger = Debugger
+}
