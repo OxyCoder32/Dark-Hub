@@ -36,7 +36,7 @@ local function generateRandomName()
     return name
 end
 
--- Codificación avanzada con múltiples métodos
+-- Codificación avanzada con múltiples métodos - SIN bit32
 local function advancedEncode(str)
     local method = random:NextInteger(1, 3)
     local encoded = ""
@@ -46,7 +46,7 @@ local function advancedEncode(str)
         -- XOR con key variable
         for i = 1, #str do
             local charCode = string.byte(str, i)
-            local encodedChar = bit32.bxor(charCode, (key + i * 7) % 256)
+            local encodedChar = (charCode ~ (key + i * 7)) % 256  -- Usando ~ en lugar de bit32.bxor
             encoded = encoded .. string.format("%02X", encodedChar)
         end
         return {data = encoded, key = key, method = 1}
@@ -56,7 +56,7 @@ local function advancedEncode(str)
         for i = 1, #str do
             local charCode = string.byte(str, i)
             local shifted = (charCode + key + i) % 256
-            local encodedChar = bit32.bxor(shifted, key)
+            local encodedChar = (shifted ~ key) % 256  -- Usando ~ en lugar de bit32.bxor
             encoded = encoded .. string.format("%02X", encodedChar)
         end
         return {data = encoded, key = key, method = 2}
@@ -66,7 +66,7 @@ local function advancedEncode(str)
         local reversed = string.reverse(str)
         for i = 1, #reversed do
             local charCode = string.byte(reversed, i)
-            local encodedChar = bit32.bxor(charCode, (key - i) % 256)
+            local encodedChar = (charCode ~ (key - i)) % 256  -- Usando ~ en lugar de bit32.bxor
             encoded = encoded .. string.format("%02X", encodedChar)
         end
         return {data = encoded, key = key, method = 3}
@@ -217,27 +217,24 @@ local function flattenCode(codeStr)
     return codeStr
 end
 
--- Generar decodificador ofuscado
+-- Generar decodificador ofuscado - SIN bit32
 local function generateObfuscatedDecoder(encodedStrings)
-    local decoderName = generateRandomName()
-    local stringTableName = generateRandomName()
-    
     local decoderCode = {
-        "local " .. stringTableName .. "={}",
-        "local function " .. decoderName .. "(d,k,m)",
+        "local _S={}",
+        "local function decoder(d,k,m)",  -- Eliminamos la función bxor
         "local r=\"\"",
         "if m==1 then",
         "for i=1,#d,2 do",
         "local h=string.sub(d,i,i+1)",
         "local e=tonumber(h,16)",
-        "local c=bit32.bxor(e,(k+i*7)%256)",
+        "local c=(e ~ (k+i*7)) % 256",  -- Usando ~ directamente
         "r=r..string.char(c)",
         "end",
         "elseif m==2 then",
         "for i=1,#d,2 do",
         "local h=string.sub(d,i,i+1)",
         "local e=tonumber(h,16)",
-        "local x=bit32.bxor(e,k)",
+        "local x=(e ~ k) % 256",  -- Usando ~ directamente
         "local c=(x-k-i)%256",
         "r=r..string.char(c)",
         "end",
@@ -245,7 +242,7 @@ local function generateObfuscatedDecoder(encodedStrings)
         "for i=1,#d,2 do",
         "local h=string.sub(d,i,i+1)",
         "local e=tonumber(h,16)",
-        "local c=bit32.bxor(e,(k-i)%256)",
+        "local c=(e ~ (k-i)) % 256",  -- Usando ~ directamente
         "r=r..string.char(c)",
         "end",
         "r=string.reverse(r)",
@@ -256,15 +253,13 @@ local function generateObfuscatedDecoder(encodedStrings)
     
     -- Agregar strings codificados
     for i, encodedData in pairs(encodedStrings) do
-        table.insert(decoderCode, stringTableName .. "[" .. i .. "]=" .. decoderName .. "(\"" .. encodedData.data .. "\"," .. encodedData.key .. "," .. encodedData.method .. ")")
+        table.insert(decoderCode, "_S[" .. i .. "]=decoder(\"" .. encodedData.data .. "\"," .. encodedData.key .. "," .. encodedData.method .. ")")
     end
     
-    table.insert(decoderCode, "local _S=" .. stringTableName)
-    
-    return table.concat(decoderCode, "\n"), decoderName, stringTableName
+    return table.concat(decoderCode, "\n")
 end
 
--- Función principal de ofuscación
+-- Función principal de ofuscación CORREGIDA
 function SemiObfuscator.Obfuscate(code, userConfig)
     -- Aplicar configuración personalizada
     if userConfig then
@@ -291,7 +286,7 @@ function SemiObfuscator.Obfuscate(code, userConfig)
     obfuscatedCode = flattenCode(obfuscatedCode)
     
     -- Paso 4: Generar decodificador ofuscado
-    local decoderCode, decoderName, stringTableName = generateObfuscatedDecoder(encodedStrings or {})
+    local decoderCode = generateObfuscatedDecoder(encodedStrings or {})
     
     -- Paso 5: Agregar código basura
     if config.enableJunkCode then
@@ -303,7 +298,12 @@ function SemiObfuscator.Obfuscate(code, userConfig)
     end
     
     -- Combinar todo
-    local finalCode = decoderCode .. "\n\n" .. obfuscatedCode
+    local finalCode = decoderCode
+    if decoderCode ~= "" then
+        finalCode = finalCode .. "\n\n" .. obfuscatedCode
+    else
+        finalCode = obfuscatedCode
+    end
     
     return finalCode
 end
