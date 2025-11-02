@@ -1,305 +1,119 @@
 local SemiObfuscator = {}
 
 local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
--- Usar math.random para exploits
 math.randomseed(tick())
-local random = {
-    NextInteger = function(_, min, max)
-        return math.random(min, max)
-    end
-}
 
--- Tablas de mapeo
-local functionMap = {}
-local variableMap = {}
-local stringMap = {}
-
--- Configuración
+-- Configuración simple
 local config = {
-    minNameLength = 4,
-    maxNameLength = 12,
     enableStringEncoding = true,
     enableFunctionRenaming = true,
-    enableVariableRenaming = true,
-    enableCodeFlattening = false, -- Desactivado temporalmente
-    enableJunkCode = true
+    enableJunkCode = false  -- Desactivar por ahora
 }
 
 -- Generar nombres aleatorios
-local function generateRandomName()
-    local length = random:NextInteger(config.minNameLength, config.maxNameLength)
+local function generateRandomName(length)
+    length = length or 8
     local name = ""
     for i = 1, length do
-        local randIndex = random:NextInteger(1, #chars)
-        name = name .. string.sub(chars, randIndex, randIndex)
+        local randIndex = math.random(1, #chars)
+        name = name .. chars:sub(randIndex, randIndex)
     end
     return name
 end
 
--- Codificación avanzada con múltiples métodos - SIN bit32
-local function advancedEncode(str)
-    local method = random:NextInteger(1, 3)
+-- Codificación simple SIN bit32
+local function simpleEncode(str)
     local encoded = ""
-    local key = random:NextInteger(100000, 999999)
+    local key = 142857  -- Key fija para simplificar
     
-    if method == 1 then
-        -- XOR con key variable
-        for i = 1, #str do
-            local charCode = string.byte(str, i)
-            local encodedChar = (charCode ~ (key + i * 7)) % 256  -- Usando ~ en lugar de bit32.bxor
-            encoded = encoded .. string.format("%02X", encodedChar)
-        end
-        return {data = encoded, key = key, method = 1}
-        
-    elseif method == 2 then
-        -- Desplazamiento + XOR
-        for i = 1, #str do
-            local charCode = string.byte(str, i)
-            local shifted = (charCode + key + i) % 256
-            local encodedChar = (shifted ~ key) % 256  -- Usando ~ en lugar de bit32.bxor
-            encoded = encoded .. string.format("%02X", encodedChar)
-        end
-        return {data = encoded, key = key, method = 2}
-        
-    else
-        -- Inversión + XOR
-        local reversed = string.reverse(str)
-        for i = 1, #reversed do
-            local charCode = string.byte(reversed, i)
-            local encodedChar = (charCode ~ (key - i)) % 256  -- Usando ~ en lugar de bit32.bxor
-            encoded = encoded .. string.format("%02X", encodedChar)
-        end
-        return {data = encoded, key = key, method = 3}
+    for i = 1, #str do
+        local charCode = str:byte(i)
+        local encodedChar = (charCode ~ (key + i)) % 256  -- XOR simple
+        encoded = encoded .. string.format("%02X", encodedChar)
     end
+    return encoded
 end
 
--- Obtener nombre único para funciones/variables
-local function getUniqueName(originalName, type)
-    local map = (type == "function") and functionMap or variableMap
-    if map[originalName] then
-        return map[originalName]
+-- Decodificador simple
+local function generateSimpleDecoder(encodedStrings)
+    if not encodedStrings or #encodedStrings == 0 then
+        return ""
     end
     
-    local newName
-    repeat
-        newName = generateRandomName()
-    until not map[newName]
+    local decoder = [[
+local _S = {}
+local function decode(s)
+    local key = 142857
+    local result = ""
+    for i = 1, #s, 2 do
+        local hex = s:sub(i, i+1)
+        local num = tonumber(hex, 16)
+        local charCode = (num ~ (key + (i+1)/2)) % 256
+        result = result .. string.char(charCode)
+    end
+    return result
+end
+]]
     
-    map[originalName] = newName
-    return newName
+    for i, encodedStr in ipairs(encodedStrings) do
+        decoder = decoder .. "\n_S[" .. i .. "] = decode(\"" .. encodedStr .. "\")"
+    end
+    
+    return decoder
 end
 
--- Generar código basura
-local function generateJunkCode()
-    local junkTypes = {
-        function()
-            local vars = {}
-            for i = 1, random:NextInteger(2, 5) do
-                table.insert(vars, generateRandomName())
-            end
-            return "local " .. table.concat(vars, ",") .. "=" .. random:NextInteger(1, 1000)
-        end,
-        function()
-            return "if false then " .. generateRandomName() .. "=" .. random:NextInteger(1, 100) .. " end"
-        end,
-        function()
-            return "for " .. generateRandomName() .. "=1," .. random:NextInteger(10, 50) .. " do end"
-        end,
-        function()
-            return "while false do " .. generateRandomName() .. "=" .. random:NextInteger(1, 100) .. " end"
-        end
-    }
-    return junkTypes[random:NextInteger(1, #junkTypes)]()
-end
-
--- Renombrar funciones y variables
-local function renameIdentifiers(codeStr)
-    if not config.enableFunctionRenaming and not config.enableVariableRenaming then
-        return codeStr
-    end
-    
-    local processedCode = codeStr
-    
-    -- Patrones para diferentes tipos de declaraciones
-    local patterns = {
-        -- Funciones
-        {pattern = "function%s+([%a_][%w_]*)%s*%(", type = "function"},
-        {pattern = "local%s+([%a_][%w_]*)%s*=%s*function%s*%(", type = "function"},
-        {pattern = "([%a_][%w_]*)%s*=%s*function%s*%(", type = "function"},
-        
-        -- Variables locales
-        {pattern = "local%s+([%a_][%w_]*)[^=]*=%s*[^f]", type = "variable"},
-        {pattern = "local%s+([%a_][%w_]*),", type = "variable"},
-        
-        -- Asignaciones globales
-        {pattern = "([%a_][%w_]*)%s*=%s*[^{]", type = "variable"}
-    }
-    
-    -- Primero recolectar todos los identificadores
-    local identifiers = {}
-    for _, pat in ipairs(patterns) do
-        for name in string.gmatch(processedCode, pat.pattern) do
-            if not string.find(name, "^[A-Z][A-Z_0-9]*$") and #name > 1 then
-                table.insert(identifiers, {name = name, type = pat.type})
-            end
-        end
-    end
-    
-    -- Renombrar de atrás hacia adelante
-    for i = #identifiers, 1, -1 do
-        local id = identifiers[i]
-        local newName = getUniqueName(id.name, id.type)
-        processedCode = string.gsub(processedCode, "%f[%a_]"..id.name.."%f[%A_]", newName)
-    end
-    
-    return processedCode
-end
-
--- Codificar strings de forma avanzada - VERSIÓN MÁS ROBUSTA
-local function encodeStringsAdvanced(codeStr)
-    if not config.enableStringEncoding then
-        return codeStr, {}
-    end
-    
-    local processedCode = codeStr
-    local encodedStrings = {}
-    local stringIndex = 1
-    
-    local function processQuotes(quoteChar)
-        local startPos = 1
-        while startPos <= #processedCode do
-            local quoteStart = string.find(processedCode, quoteChar, startPos, true)
-            if not quoteStart then break end
-            
-            -- Buscar cierre de comilla
-            local contentStart = quoteStart + 1
-            local quoteEnd = string.find(processedCode, quoteChar, contentStart, true)
-            
-            if quoteEnd then
-                local content = string.sub(processedCode, contentStart, quoteEnd - 1)
-                
-                -- CORRECCIÓN: Solo codificar si el contenido es válido
-                if content and #content > 1 then
-                    local success, encodedData = pcall(advancedEncode, content)
-                    if success then
-                        encodedStrings[stringIndex] = encodedData
-                        local replacement = "_S[" .. stringIndex .. "]"
-                        local before = string.sub(processedCode, 1, quoteStart - 1)
-                        local after = string.sub(processedCode, quoteEnd + 1)
-                        processedCode = before .. replacement .. after
-                        stringIndex = stringIndex + 1
-                        startPos = #before + #replacement + 1
-                    else
-                        startPos = quoteEnd + 1
-                    end
-                else
-                    startPos = quoteEnd + 1
-                end
-            else
-                break
-            end
-        end
-    end
-    
-    processQuotes('"')
-    processQuotes("'")
-    
-    return processedCode, encodedStrings
-end
-
--- Aplanar código (convertir funciones anidadas en planas)
-local function flattenCode(codeStr)
-    if not config.enableCodeFlattening then
-        return codeStr
-    end
-    
-    -- Implementación básica de aplanamiento
-    return codeStr
-end
-
--- Generar decodificador ofuscado - SIN bit32
-local function generateObfuscatedDecoder(encodedStrings)
-    local decoderCode = {
-        "local _S={}",
-        "local function decoder(d,k,m)",  -- Eliminamos la función bxor
-        "local r=\"\"",
-        "if m==1 then",
-        "for i=1,#d,2 do",
-        "local h=string.sub(d,i,i+1)",
-        "local e=tonumber(h,16)",
-        "local c=(e ~ (k+i*7)) % 256",  -- Usando ~ directamente
-        "r=r..string.char(c)",
-        "end",
-        "elseif m==2 then",
-        "for i=1,#d,2 do",
-        "local h=string.sub(d,i,i+1)",
-        "local e=tonumber(h,16)",
-        "local x=(e ~ k) % 256",  -- Usando ~ directamente
-        "local c=(x-k-i)%256",
-        "r=r..string.char(c)",
-        "end",
-        "else",
-        "for i=1,#d,2 do",
-        "local h=string.sub(d,i,i+1)",
-        "local e=tonumber(h,16)",
-        "local c=(e ~ (k-i)) % 256",  -- Usando ~ directamente
-        "r=r..string.char(c)",
-        "end",
-        "r=string.reverse(r)",
-        "end",
-        "return r",
-        "end"
-    }
-    
-    -- Agregar strings codificados
-    for i, encodedData in pairs(encodedStrings) do
-        table.insert(decoderCode, "_S[" .. i .. "]=decoder(\"" .. encodedData.data .. "\"," .. encodedData.key .. "," .. encodedData.method .. ")")
-    end
-    
-    return table.concat(decoderCode, "\n")
-end
-
--- Función principal de ofuscación CORREGIDA
-function SemiObfuscator.Obfuscate(code, userConfig)
-    -- Aplicar configuración personalizada
-    if userConfig then
-        for k, v in pairs(userConfig) do
-            config[k] = v
-        end
-    end
-    
-    -- Resetear mapeos
-    functionMap = {}
-    variableMap = {}
-    stringMap = {}
-    
+-- Función principal SIMPLIFICADA
+function SemiObfuscator.Obfuscate(code)
     local obfuscatedCode = code
+    local encodedStrings = {}
     
-    -- Paso 1: Renombrar identificadores
-    obfuscatedCode = renameIdentifiers(obfuscatedCode)
-    
-    -- Paso 2: Codificar strings
-    local encodedStrings
-    obfuscatedCode, encodedStrings = encodeStringsAdvanced(obfuscatedCode)
-    
-    -- Paso 3: Aplanar código
-    obfuscatedCode = flattenCode(obfuscatedCode)
-    
-    -- Paso 4: Generar decodificador ofuscado
-    local decoderCode = generateObfuscatedDecoder(encodedStrings or {})
-    
-    -- Paso 5: Agregar código basura
-    if config.enableJunkCode then
-        local junkLines = {}
-        for i = 1, random:NextInteger(3, 8) do
-            table.insert(junkLines, generateJunkCode())
+    -- 1. Codificar strings simples
+    if config.enableStringEncoding then
+        local processedCode = obfuscatedCode
+        local stringIndex = 1
+        
+        -- Buscar y codificar strings entre comillas dobles
+        for quoted in processedCode:gmatch('"([^"]*)"') do
+            if #quoted > 3 then  -- Solo strings largos
+                local encoded = simpleEncode(quoted)
+                encodedStrings[stringIndex] = encoded
+                processedCode = processedCode:gsub(
+                    '"' .. quoted:gsub("([^%w])", "%%%1") .. '"',
+                    '_S[' .. stringIndex .. ']',
+                    1
+                )
+                stringIndex = stringIndex + 1
+            end
         end
-        obfuscatedCode = table.concat(junkLines, "\n") .. "\n" .. obfuscatedCode
+        obfuscatedCode = processedCode
     end
     
-    -- Combinar todo
-    local finalCode = decoderCode
-    if decoderCode ~= "" then
+    -- 2. Renombrar funciones básico
+    if config.enableFunctionRenaming then
+        local funcMap = {}
+        
+        -- Encontrar funciones locales
+        for funcName in obfuscatedCode:gmatch("local%s+([%a_][%w_]*)%s*=%s*function") do
+            if not funcMap[funcName] then
+                funcMap[funcName] = generateRandomName()
+            end
+        end
+        
+        -- Reemplazar nombres
+        for oldName, newName in pairs(funcMap) do
+            obfuscatedCode = obfuscatedCode:gsub(oldName, newName)
+        end
+    end
+    
+    -- 3. Generar decodificador si hay strings codificados
+    local decoder = ""
+    if #encodedStrings > 0 then
+        decoder = generateSimpleDecoder(encodedStrings)
+    end
+    
+    -- 4. Combinar todo
+    local finalCode = decoder
+    if decoder ~= "" then
         finalCode = finalCode .. "\n\n" .. obfuscatedCode
     else
         finalCode = obfuscatedCode
@@ -308,7 +122,6 @@ function SemiObfuscator.Obfuscate(code, userConfig)
     return finalCode
 end
 
--- Configurar el ofuscador
 function SemiObfuscator.Configure(newConfig)
     for k, v in pairs(newConfig) do
         config[k] = v
